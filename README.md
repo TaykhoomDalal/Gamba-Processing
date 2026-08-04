@@ -54,6 +54,11 @@ held out from GAMBA pretraining. The remaining chromosomes are marked `train`.
 Filtering to `split == "test"` reproduces the chromosome subset used by
 GAMBA's representation evaluator.
 
+The Hugging Face configs expose each physical parquet as the Hub split `all`.
+That is separate from the parquet's `split` column: `all` means "load this
+whole file," while the column contains the chromosome-level `train`/`test`
+assignment. This avoids storing duplicate physical train and test files.
+
 | Parquet | Labels |
 |---|---|
 | `functional-upstream-gamba*.parquet` | `feature`, `upstream` |
