@@ -17,6 +17,9 @@ GENCODE = "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/
 FASTA = "https://storage.googleapis.com/basenji_barnyard2/hg38.ml.fa.gz"
 RMSK = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/rmsk.txt.gz"
 REFGENE = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/refGene.txt.gz"
+PHYLOP = "https://cgl.gi.ucsc.edu/data/cactus/241-mammalian-2020v2-hub/Homo_sapiens/241-mammalian-2020v2.bigWig"
+PHYLOP_NAME = "241-mammalian-2020v2.bigWig"
+PHYLOP_SIZE = 21_888_290_307
 SMALL_FILES = [
     "experiments.tsv", "promoters.bed", "hg38_UCNE_coordinates.bed",
     "ucne_paralogues.txt",
@@ -47,6 +50,12 @@ def verify(path: Path, expected: str) -> None:
     actual = digest.hexdigest()
     if actual != expected:
         raise RuntimeError(f"{path}: expected sha256 {expected}, got {actual}")
+
+
+def verify_size(path: Path, expected: int) -> None:
+    actual = path.stat().st_size
+    if actual != expected:
+        raise RuntimeError(f"{path}: expected {expected} bytes, got {actual}")
 
 
 def gzip_lines(url: str):
@@ -127,12 +136,18 @@ def symlink(source: Path, target: Path) -> None:
     target.symlink_to(source)
 
 
-def reuse_existing(old_root: Path, data_root: Path, gamba_root: Path) -> None:
+def reuse_existing(old_root: Path, data_root: Path, gamba_root: Path,
+                   include_phylop: bool) -> None:
     old_data = old_root / "data_processing/data"
     old_info = old_root / "data_processing/region_info"
     symlink(old_data / "240-mammalian/hg38.ml.fa", data_root / "hg38.ml.fa")
     symlink(old_data / "240-mammalian/hg38.ml.fa.fai", data_root / "hg38.ml.fa.fai")
     symlink(old_data / "gtfs", data_root / "gtfs")
+    if include_phylop:
+        source = old_data / "240-mammalian" / PHYLOP_NAME
+        if not source.exists():
+            raise FileNotFoundError(source)
+        symlink(source, data_root / PHYLOP_NAME)
     info = data_root / "region_info"
     for name in ("repeats_hg38.bed", "UCSC_5UTR_exons.bed", "UCSC_3UTR_exons.bed"):
         symlink(old_info / name, info / name)
@@ -148,13 +163,22 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=root / "data")
     parser.add_argument("--reuse-from", type=Path)
     parser.add_argument("--gamba-root", type=Path, default=root.parent / "Gamba")
+    parser.add_argument(
+        "--include-phylop",
+        action="store_true",
+        help="Also download or link the optional 21.9 GB Zoonomia phyloP bigWig.",
+    )
     args = parser.parse_args()
 
     if args.reuse_from:
-        reuse_existing(args.reuse_from, args.data_root, args.gamba_root)
+        reuse_existing(
+            args.reuse_from, args.data_root, args.gamba_root, args.include_phylop
+        )
         verify(args.data_root / "hg38.ml.fa", EXPECTED_FASTA)
         for name, digest in EXPECTED_DERIVED.items():
             verify(args.data_root / "region_info" / name, digest)
+        if args.include_phylop:
+            verify_size(args.data_root / PHYLOP_NAME, PHYLOP_SIZE)
         print(f"linked existing inputs into {args.data_root}")
         return
 
@@ -177,6 +201,9 @@ def main() -> None:
     verify(fasta, EXPECTED_FASTA)
     for name, digest in EXPECTED_DERIVED.items():
         verify(info / name, digest)
+    if args.include_phylop:
+        download(PHYLOP, args.data_root / PHYLOP_NAME)
+        verify_size(args.data_root / PHYLOP_NAME, PHYLOP_SIZE)
     print(f"downloaded and prepared inputs under {args.data_root}")
 
 

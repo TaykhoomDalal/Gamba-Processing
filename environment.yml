@@ -10,3 +10,4 @@ dependencies:
   - pip
   - pip:
       - pyfaidx==0.9.0.4
+      - pyBigWig==0.3.25
