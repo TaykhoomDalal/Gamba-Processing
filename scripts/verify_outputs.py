@@ -8,7 +8,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import ATG_SCHEMA, SCHEMA
+from common import ATG_SCHEMA, PHYLOP_FIELDS, SCHEMA, with_phylop
 
 
 def compare_trees(expected: Path, actual: Path) -> None:
@@ -22,9 +22,12 @@ def compare_trees(expected: Path, actual: Path) -> None:
     assert not mismatches, f"BED mismatches: {mismatches[:10]}"
 
 
-def verify_parquet(path: Path) -> int:
+def verify_parquet(path: Path, require_phylop: bool) -> int:
     table = pq.read_table(path)
-    assert table.schema == (ATG_SCHEMA if path.name == "atg-gamba.parquet" else SCHEMA)
+    expected = ATG_SCHEMA if path.name == "atg-gamba.parquet" else SCHEMA
+    if require_phylop:
+        expected = with_phylop(expected)
+    assert table.schema == expected
     frame = table.to_pandas()
     assert frame.sequence.str.len().between(1, 2048).all()
     assert (frame.roi_start >= 0).all()
@@ -37,6 +40,8 @@ def verify_parquet(path: Path) -> int:
     assert not frame.duplicated(
         ["scope", "category", "label", "pair_id"]
     ).any()
+    if require_phylop:
+        assert not frame[[field.name for field in PHYLOP_FIELDS]].isna().any().any()
 
     noncoding_added = "-noncoding-added" in path.stem
     if path.name.startswith("functional-") and "multiclass" not in path.name:
@@ -80,6 +85,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=root)
     parser.add_argument("--compare-reference", action="store_true")
+    parser.add_argument("--skip-phylop", action="store_true")
     args = parser.parse_args()
 
     if args.compare_reference:
@@ -111,7 +117,10 @@ def main() -> None:
         args.root / "ATG/atg-gamba.parquet",
     ]
     for path in paths:
-        print(f"{path.relative_to(args.root)}: {verify_parquet(path):,} rows")
+        print(
+            f"{path.relative_to(args.root)}: "
+            f"{verify_parquet(path, not args.skip_phylop):,} rows"
+        )
     print("all outputs verified")
 
 

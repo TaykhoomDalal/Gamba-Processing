@@ -21,6 +21,7 @@ from pyfaidx import Fasta
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import context_for_region, stable_100bp_span, write_parquet
+from scripts.add_phylop import annotate
 
 
 GAMBA_CATEGORIES = [
@@ -464,7 +465,7 @@ def parquet_row(genome, category: str, label: str, scope: str, row: dict,
 
 def build_parquets(regions: Path, genome_path: Path, output: Path,
                    categories: list[str], seed: int,
-                   noncoding_added: bool) -> None:
+                   noncoding_added: bool, bigwig_path: Path | None) -> None:
     genome = Fasta(str(genome_path))
     chromosomes = set(ALL_CHROMS)
     suffix = "-noncoding-added" if noncoding_added else ""
@@ -506,10 +507,14 @@ def build_parquets(regions: Path, genome_path: Path, output: Path,
             output / name,
             binary_rows(control),
         )
+        if bigwig_path is not None:
+            annotate(output / name, output / name, bigwig_path, 2048)
         print(f"{name}: {count:,} rows")
     for scope, label in (("full", "full"), ("100bp", "100bp")):
         name = f"functional-multiclass-gamba-{label}{suffix}.parquet"
         count = write_parquet(output / name, multiclass_rows(scope))
+        if bigwig_path is not None:
+            annotate(output / name, output / name, bigwig_path, 2048)
         print(f"{name}: {count:,} rows")
     genome.close()
 
@@ -522,6 +527,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=root)
     parser.add_argument("--limit-per-category", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--bigwig",
+        type=Path,
+        default=root.parent / "data/241-mammalian-2020v2.bigWig",
+    )
+    parser.add_argument("--skip-phylop", action="store_true")
     parser.add_argument(
         "--include-noncoding", action="store_true"
     )
@@ -541,6 +552,7 @@ def main() -> None:
         build_parquets(
             args.regions_dir, args.data_root / "hg38.ml.fa", args.output_dir,
             categories, args.seed, args.include_noncoding,
+            None if args.skip_phylop else args.bigwig,
         )
 
 

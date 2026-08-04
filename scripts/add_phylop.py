@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -11,10 +12,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pyBigWig
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import PHYLOP_NAMES, with_phylop
 
-SUMMARY_NAMES = (
-    "mean", "std", "frac_pos", "frac_neg", "mean_pos", "mean_neg"
-)
+SUMMARY_NAMES = PHYLOP_NAMES
 
 
 def read_scores(bigwig, chrom: str, start: int, end: int) -> np.ndarray:
@@ -99,6 +100,11 @@ def baseline_roi_span(row: dict, chrom_length: int) -> tuple[int, int]:
 
 def annotate(input_path: Path, output_path: Path, bigwig_path: Path,
              batch_size: int) -> int:
+    if not bigwig_path.exists():
+        raise FileNotFoundError(
+            f"{bigwig_path} is missing; run scripts/download_data.py first "
+            "or pass --skip-phylop to the dataset processor"
+        )
     source = pq.ParquetFile(input_path)
     for name in (
         *(f"phylop_{name}" for name in SUMMARY_NAMES),
@@ -107,11 +113,7 @@ def annotate(input_path: Path, output_path: Path, bigwig_path: Path,
         if name in source.schema_arrow.names:
             raise ValueError(f"{input_path} already contains {name}")
 
-    schema = pa.schema([
-        *source.schema_arrow,
-        *(pa.field(f"phylop_{name}", pa.float32()) for name in SUMMARY_NAMES),
-        *(pa.field(f"phylop_context_{name}", pa.float32()) for name in SUMMARY_NAMES),
-    ])
+    schema = with_phylop(source.schema_arrow)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
     temporary.unlink(missing_ok=True)
@@ -187,6 +189,11 @@ def main() -> None:
         default=root / "data/241-mammalian-2020v2.bigWig",
     )
     parser.add_argument("--output-dir", type=Path, default=root / "phylop")
+    parser.add_argument(
+        "--in-place",
+        action="store_true",
+        help="Replace each input parquet instead of writing under --output-dir.",
+    )
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
@@ -199,11 +206,14 @@ def main() -> None:
         parser.error("provide at least one parquet input")
     if not args.bigwig.exists():
         raise FileNotFoundError(
-            f"{args.bigwig} is missing; run scripts/download_data.py "
-            "--include-phylop first"
+            f"{args.bigwig} is missing; run scripts/download_data.py first"
         )
     for input_path in args.inputs:
-        output = args.output_dir / f"{input_path.stem}-phylop.parquet"
+        output = (
+            input_path
+            if args.in_place
+            else args.output_dir / f"{input_path.stem}-phylop.parquet"
+        )
         count = annotate(input_path, output, args.bigwig, args.batch_size)
         print(f"{output}: {count:,} rows")
 

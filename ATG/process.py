@@ -21,6 +21,7 @@ from pyfaidx import Fasta
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import ATG_SCHEMA, COMPLEMENT, context_for_region, write_parquet
+from scripts.add_phylop import annotate
 
 
 LABELS = {
@@ -309,6 +310,12 @@ def main() -> None:
     parser.add_argument("--per-chrom-limit", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip-source-generation", action="store_true")
+    parser.add_argument(
+        "--bigwig",
+        type=Path,
+        default=root.parent / "data/241-mammalian-2020v2.bigWig",
+    )
+    parser.add_argument("--skip-phylop", action="store_true")
     args = parser.parse_args()
 
     genome = Fasta(str(args.data_root / "hg38.ml.fa"))
@@ -332,6 +339,8 @@ def main() -> None:
     sampled = even_sample(frame, args.n_examples, args.seed)
     sampled.to_csv(args.source_dir / "sampled_examples_atg5.tsv", sep="\t", index=False)
     count = write_parquet(args.output, parquet_rows(sampled, genome), ATG_SCHEMA)
+    if not args.skip_phylop:
+        annotate(args.output, args.output, args.bigwig, 2048)
     genome.close()
     assert count == 5 * len(sampled)
     print(f"ATG-5-way: {len(sampled):,} examples, {count:,} rows")

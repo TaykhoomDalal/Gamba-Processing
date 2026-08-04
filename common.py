@@ -35,6 +35,18 @@ ATG_SCHEMA = pa.schema([
     ("label_id", pa.int8()),
     ("delta_bp", pa.int64()),
 ])
+PHYLOP_NAMES = (
+    "mean", "std", "frac_pos", "frac_neg", "mean_pos", "mean_neg"
+)
+PHYLOP_FIELDS = tuple(
+    pa.field(f"{prefix}_{name}", pa.float32())
+    for prefix in ("phylop", "phylop_context")
+    for name in PHYLOP_NAMES
+)
+
+
+def with_phylop(schema: pa.Schema) -> pa.Schema:
+    return pa.schema([*schema, *PHYLOP_FIELDS])
 
 
 def context_for_region(genome, chrom: str, start: int, end: int, strand: str,

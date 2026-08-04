@@ -164,20 +164,21 @@ def main() -> None:
     parser.add_argument("--reuse-from", type=Path)
     parser.add_argument("--gamba-root", type=Path, default=root.parent / "Gamba")
     parser.add_argument(
-        "--include-phylop",
+        "--skip-phylop",
         action="store_true",
-        help="Also download or link the optional 21.9 GB Zoonomia phyloP bigWig.",
+        help="Skip the default 21.9 GB Zoonomia phyloP bigWig.",
     )
     args = parser.parse_args()
+    include_phylop = not args.skip_phylop
 
     if args.reuse_from:
         reuse_existing(
-            args.reuse_from, args.data_root, args.gamba_root, args.include_phylop
+            args.reuse_from, args.data_root, args.gamba_root, include_phylop
         )
         verify(args.data_root / "hg38.ml.fa", EXPECTED_FASTA)
         for name, digest in EXPECTED_DERIVED.items():
             verify(args.data_root / "region_info" / name, digest)
-        if args.include_phylop:
+        if include_phylop:
             verify_size(args.data_root / PHYLOP_NAME, PHYLOP_SIZE)
         print(f"linked existing inputs into {args.data_root}")
         return
@@ -201,7 +202,7 @@ def main() -> None:
     verify(fasta, EXPECTED_FASTA)
     for name, digest in EXPECTED_DERIVED.items():
         verify(info / name, digest)
-    if args.include_phylop:
+    if include_phylop:
         download(PHYLOP, args.data_root / PHYLOP_NAME)
         verify_size(args.data_root / PHYLOP_NAME, PHYLOP_SIZE)
     print(f"downloaded and prepared inputs under {args.data_root}")

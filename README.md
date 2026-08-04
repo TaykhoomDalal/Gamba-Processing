@@ -43,9 +43,6 @@ ATG/
     ├── chr22_atg_5way_labels.tsv
     ├── all_chr_atg_5way.tsv
     └── sampled_examples_atg5.tsv
-
-phylop/
-└── *-phylop.parquet
 ```
 
 The functional parquets include `chr1`–`chr22` and `chrX`. Rows on `chr2`,
@@ -86,6 +83,8 @@ All ten functional parquets use exactly the same columns and Arrow types:
 | `roi_start`, `roi_end` | int32 | feature offsets in the strand-oriented sequence |
 | `pool_start`, `pool_end` | int32 | offsets that the evaluator should pool |
 | `name` | string | source annotation identifier |
+| `phylop_{mean,std,frac_pos,frac_neg,mean_pos,mean_neg}` | float32 | GAMBA phyloP baseline over the task pooling span |
+| `phylop_context_{mean,std,frac_pos,frac_neg,mean_pos,mean_neg}` | float32 | GAMBA phyloP baseline over its symmetric 2,048 bp context |
 
 The ATG parquet uses the same core columns and adds `transcript_id`, `gene_id`,
 `label_id`, and `delta_bp`. Functional parquets do not contain empty ATG-only
@@ -104,9 +103,7 @@ mamba activate gamba-processing
 ```
 
 The environment pins Python 3.12.13, NumPy 2.5.1, pandas 3.0.5, PyArrow
-25.0.0, pyfaidx 0.9.0.4, and pyBigWig 0.3.25. A phyloP bigWig is not required
-for the core parquets; it is only needed for the optional GAMBA phyloP baseline
-features below.
+25.0.0, pyfaidx 0.9.0.4, and pyBigWig 0.3.25.
 
 ## Inputs
 
@@ -125,7 +122,7 @@ This downloads or derives:
 | per-chromosome GTFs | `https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.annotation.gtf.gz` |
 | RepeatMasker BED | `https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/rmsk.txt.gz` |
 | 5′/3′ UTR BEDs | `https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/refGene.txt.gz` |
-| optional 241-mammalian phyloP bigWig | `https://cgl.gi.ucsc.edu/data/cactus/241-mammalian-2020v2-hub/Homo_sapiens/241-mammalian-2020v2.bigWig` |
+| 241-mammalian phyloP bigWig | `https://cgl.gi.ucsc.edu/data/cactus/241-mammalian-2020v2-hub/Homo_sapiens/241-mammalian-2020v2.bigWig` |
 
 The RepeatMasker and UTR conversions reproduce the input layout used for the
 local GAMBA run. Their expected SHA-256 hashes are checked after download so a
@@ -142,10 +139,10 @@ python scripts/download_data.py \
 
 This only creates local symlinks for the large files.
 
-## Optional GAMBA phyloP baseline features
+## GAMBA phyloP baseline features
 
 GAMBA's phyloP baseline converts per-base Zoonomia scores into six float32
-features:
+features. All generated parquets include these features by default.
 
 | Column suffix | Calculation |
 |---|---|
@@ -161,32 +158,29 @@ zero, scores are rounded to two decimal places before summarization, and the
 statistics are stored as float32. Minus-strand score arrays are reversed before
 reduction, matching GAMBA's operation order exactly.
 
-Download the optional 21.9 GB bigWig:
+The default data setup downloads the 21.9 GB bigWig and verifies its expected
+21,888,290,307-byte size:
 
 ```bash
-python scripts/download_data.py --include-phylop
+python scripts/download_data.py
 ```
 
-The downloader verifies the expected 21,888,290,307-byte file size.
-
-Or link the existing local copy:
+The reuse workflow links the existing local copy by default:
 
 ```bash
 python scripts/download_data.py \
   --reuse-from /home/t-tdalal/glm/model/Gamba-evals-old \
-  --gamba-root /home/t-tdalal/glm/model/Gamba \
-  --include-phylop
+  --gamba-root /home/t-tdalal/glm/model/Gamba
 ```
 
-Annotate any generated parquets:
+The normal functional and ATG processors append both feature sets directly to
+their standard parquet filenames. To create sequence-only parquets instead:
 
 ```bash
-python scripts/add_phylop.py \
-  Functional-Regions/*.parquet \
-  ATG/atg-gamba.parquet
+bash scripts/run_all.sh --skip-phylop
 ```
 
-Outputs are written to `phylop/<input-name>-phylop.parquet`. The script adds:
+The default parquets contain:
 
 - `phylop_{mean,std,frac_pos,frac_neg,mean_pos,mean_neg}` for GAMBA's baseline
   ROI. This is the annotated ROI for ordinary features, the centered symmetric
@@ -195,8 +189,9 @@ Outputs are written to `phylop/<input-name>-phylop.parquet`. The script adds:
 - `phylop_context_{mean,std,frac_pos,frac_neg,mean_pos,mean_neg}` for GAMBA's
   symmetric 2,048 bp phyloP baseline context.
 
-This is an optional derived dataset. It does not modify the core parquets or
-the Hugging Face releases.
+`scripts/add_phylop.py` is also available for existing sequence-only parquets.
+Use `--in-place` to replace them, or omit it to write
+`phylop/<input-name>-phylop.parquet`.
 
 ## Build
 
@@ -215,6 +210,9 @@ python Functional-Regions/process.py \
   --regions-dir Functional-Regions/regions-noncoding-added
 python ATG/process.py
 ```
+
+Each processor includes phyloP by default. Pass `--skip-phylop` to either
+processor, or to `scripts/run_all.sh`, for sequence-only outputs.
 
 Functional regions are capped at 10,000 retained anchors per category with
 seed 42. ATG generation follows GAMBA's MANE Select CDS logic, then samples
