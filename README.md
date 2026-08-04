@@ -1,0 +1,220 @@
+# GAMBA evaluation parquet processing
+
+This repository is the small, data-only part of
+[Microsoft GAMBA](https://github.com/microsoft/gamba): it recreates the
+functional-region and ATG evaluation inputs and writes fixed, model-independent
+parquets. It contains no model, embedding, plotting, or metric code.
+
+The implementation is derived from GAMBA commit
+[`e83984e`](https://github.com/microsoft/gamba/commit/e83984ea20bb4ee017993144fbe17e7bae3cdddc),
+principally:
+
+- `data_processing/create_eval_data.py`
+- `data_processing/make_ATG_data.py`
+- `src/evaluation/run_eval.py`
+- `src/evaluation/ATG_reps.py`
+- `src/evaluation/utils/helpers.py`
+
+GAMBA is MIT licensed; the license and attribution are retained in
+[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+
+## Outputs
+
+```text
+Functional-Regions/
+├── functional-upstream-gamba.parquet
+├── functional-upstream-gamba-noncoding-added.parquet
+├── functional-random-gamba.parquet
+├── functional-random-gamba-noncoding-added.parquet
+├── functional-random-noannot-gamba.parquet
+├── functional-random-noannot-gamba-noncoding-added.parquet
+├── functional-multiclass-gamba-full.parquet
+├── functional-multiclass-gamba-100bp.parquet
+├── functional-multiclass-gamba-full-noncoding-added.parquet
+├── functional-multiclass-gamba-100bp-noncoding-added.parquet
+├── regions/
+└── regions-noncoding-added/
+
+ATG/
+├── atg-gamba.parquet
+└── source/
+    ├── chr1_atg_5way_labels.tsv
+    ├── ...
+    ├── chr22_atg_5way_labels.tsv
+    ├── all_chr_atg_5way.tsv
+    └── sampled_examples_atg5.tsv
+```
+
+The functional parquets include `chr1`–`chr22` and `chrX`. Rows on `chr2`,
+`chr3`, `chr16`, and `chr22` are marked `test` because those chromosomes were
+held out from GAMBA pretraining. The remaining chromosomes are marked `train`.
+Filtering to `split == "test"` reproduces the chromosome subset used by
+GAMBA's representation evaluator.
+
+| Parquet | Labels |
+|---|---|
+| `functional-upstream-gamba*.parquet` | `feature`, `upstream` |
+| `functional-random-gamba*.parquet` | `feature`, `random` |
+| `functional-random-noannot-gamba*.parquet` | `feature`, `random-noannot` |
+| `functional-multiclass-gamba-{full,100bp}*.parquet` | one label per functional category |
+| `ATG/atg-gamba.parquet` | `start`, `noncoding_near`, `noncoding_far`, `inframe_methionine`, `outframe_atg` |
+
+The multiclass full-region and 100 bp variants are separate parquet files and
+separate Hugging Face configs. Files ending in `-noncoding-added.parquet`
+include the explicit `noncoding_regions` extension; unsuffixed files are the
+canonical ten-category GAMBA data.
+
+## Parquet schemas
+
+All ten functional parquets use exactly the same columns and Arrow types:
+
+| Column | Type | Meaning |
+|---|---|---|
+| `split`, `sequence`, `label` | string | probe/fine-tuning `train` or held-out `test`; model input and target |
+| `pair_id` | string | matched functional pair or stable feature identifier |
+| `category`, `scope` | string | functional class and pooling scope |
+| `chrom`, `start`, `end`, `strand` | string/int64 | 0-based, half-open feature coordinates |
+| `context_start`, `context_end` | int64 | forward-genome coordinates of `sequence` |
+| `roi_start`, `roi_end` | int32 | feature offsets in the strand-oriented sequence |
+| `pool_start`, `pool_end` | int32 | offsets that the evaluator should pool |
+| `name` | string | source annotation identifier |
+
+The ATG parquet uses the same core columns and adds `transcript_id`, `gene_id`,
+`label_id`, and `delta_bp`. Functional parquets do not contain empty ATG-only
+columns.
+
+Sequences use GAMBA's asymmetric 2,048 bp window: the ROI is at the right edge
+on `+` records and at the left edge on every other strand value. Only `-`
+records are reverse complemented. Features longer than 2,048 bp use GAMBA's
+1,000 bp truncation.
+
+## Environment
+
+```bash
+bash scripts/create_environment.sh
+mamba activate gamba-processing
+```
+
+The environment pins Python 3.12.13, NumPy 2.5.1, pandas 3.0.5, PyArrow
+25.0.0, and pyfaidx 0.9.0.4 so parquet bytes are reproducible. A phyloP
+bigWig is not required because these parquets freeze benchmark sequences and
+labels, not model-specific baseline features.
+
+## Inputs
+
+For a fresh standalone build:
+
+```bash
+python scripts/download_data.py
+```
+
+This downloads or derives:
+
+| Input | Source |
+|---|---|
+| bundled VISTA, promoter, UCNE, and paralogue files | `https://raw.githubusercontent.com/microsoft/gamba/e83984ea20bb4ee017993144fbe17e7bae3cdddc/data_processing/region_info/<file>` |
+| `hg38.ml.fa` | `https://storage.googleapis.com/basenji_barnyard2/hg38.ml.fa.gz` |
+| per-chromosome GTFs | `https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.annotation.gtf.gz` |
+| RepeatMasker BED | `https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/rmsk.txt.gz` |
+| 5′/3′ UTR BEDs | `https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/refGene.txt.gz` |
+
+The RepeatMasker and UTR conversions reproduce the input layout used for the
+local GAMBA run. Their expected SHA-256 hashes are checked after download so a
+mutable UCSC table cannot silently change the benchmark. Downloaded and
+generated data are gitignored.
+
+To reuse the already downloaded files from the former evaluation workspace:
+
+```bash
+python scripts/download_data.py \
+  --reuse-from /home/t-tdalal/glm/model/Gamba-evals-old \
+  --gamba-root /home/t-tdalal/glm/model/Gamba
+```
+
+This only creates local symlinks for the large files.
+
+## Build
+
+Run both processors:
+
+```bash
+bash scripts/run_all.sh
+```
+
+Or independently:
+
+```bash
+python Functional-Regions/process.py
+python Functional-Regions/process.py \
+  --include-noncoding \
+  --regions-dir Functional-Regions/regions-noncoding-added
+python ATG/process.py
+```
+
+Functional regions are capped at 10,000 retained anchors per category with
+seed 42. ATG generation follows GAMBA's MANE Select CDS logic, then samples
+2,000 complete examples approximately evenly across `chr1`–`chr22`, also with
+seed 42. Omit `--include-noncoding` to build the exact ten-category GAMBA
+region set instead of the final extended parquet set.
+
+### Functional chromosome split
+
+GAMBA's original pretraining split was:
+
+- training: `chr1`, `chr4`–`chr15`, `chr17`–`chr21`, and `chrX`;
+- validation: `chr3`, `chr16`;
+- test: `chr2`, `chr22`.
+
+`src/evaluation/run_eval.py` combines the validation and test chromosomes into
+one four-chromosome evaluation group. The parquets therefore label all four as
+`test` and label the remaining chromosomes as `train`.
+
+For zero-shot evaluation, use `test` to reproduce the GAMBA paper or evaluate
+all rows for broader chromosome coverage. For probing or supervised
+fine-tuning, `train` can fit the task-specific head and `test` can evaluate it
+on held-out chromosomes. The split also records GAMBA's pretraining exposure:
+`train` chromosomes were seen during GAMBA pretraining, while `test`
+chromosomes were not. In the paper's zero-shot evaluation, the GAMBA models
+were frozen and evaluated on this held-out `test` subset without fitting a
+task-specific model on these benchmark rows. The ATG benchmark follows GAMBA's
+separate all-autosome sampling and remains a single `test` split.
+
+## Validation
+
+```bash
+python scripts/verify_outputs.py
+```
+
+The completed reference comparison found:
+
+- all 920 ten-category BED files byte-identical to unmodified GAMBA output;
+- all 22 ATG chromosome TSVs, the combined TSV, and the sampled 2,000 examples
+  byte-identical to GAMBA output;
+- 169,674 rows in each canonical binary parquet
+  (`135,692` train, `33,982` test);
+- 188,560 rows in each binary parquet with noncoding added
+  (`150,726` train, `37,834` test);
+- 84,837 canonical full-region multiclass rows and 58,643 canonical 100 bp rows;
+- 94,280 full-region and 67,623 100 bp rows with noncoding added;
+- 10,000 rows in the ATG parquet.
+
+## Intentional, visible differences from GAMBA
+
+1. GAMBA's checked-in `experiments.tsv` uses `Element Coordinates`, while
+   `create_eval_data.py` only accepts `coordinate_hg38` or `coord`. This parser
+   accepts all three names; coordinates are transformed identically.
+2. `create_eval_data.py` generates ten functional categories, but
+   `run_eval.py` still lists `noncoding_regions`. Passing
+   `--include-noncoding` adds a deterministic, half-open noncoding complement;
+   without that optional flag the output is GAMBA's original ten categories.
+3. GAMBA selects `roi100bp` with Python's process-randomized `hash()`. Here the
+   same seed/category/pair ID is passed through BLAKE2 so the saved eval set is
+   stable across machines and Python processes.
+4. GAMBA stores a minus-strand ATG position as `[position, position + 3)` and
+   then reverse complements that interval. This pipeline intentionally keeps
+   that convention even when the resulting displayed triplet is surprising.
+
+These are processing fixes, not model changes. The ten-category
+default BED output is used for direct equivalence checks against the
+unmodified GAMBA generator; `scripts/run_all.sh` builds both canonical and
+`noncoding-added` parquet variants.

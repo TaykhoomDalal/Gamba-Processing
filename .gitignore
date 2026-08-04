@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.log
+
+data/
+reference_data/
+reproduced_data/
+Functional-Regions/regions*/
+Functional-Regions/*.parquet
+ATG/source/
+ATG/*.parquet
