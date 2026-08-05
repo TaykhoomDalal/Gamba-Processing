@@ -409,8 +409,28 @@ def build_regions(data_root: Path, output: Path, include_noncoding: bool,
         order.append("noncoding_regions")
 
     retained = retain_nonoverlapping(categories, order, limit, seed)
-    retained, upstream = add_upstream(retained, chrom_lengths, 2000)
-    noannot, randoms = random_controls(retained, chrom_lengths, seed, 2000)
+    if include_noncoding:
+        canonical = {name: retained[name] for name in GAMBA_CATEGORIES}
+        canonical, upstream = add_upstream(canonical, chrom_lengths, 2000)
+        noannot, randoms = random_controls(canonical, chrom_lengths, seed, 2000)
+
+        all_anchors, all_upstream = add_upstream(retained, chrom_lengths, 2000)
+        all_noannot, all_randoms = random_controls(
+            all_anchors, chrom_lengths, seed, 2000
+        )
+        retained = {**canonical, "noncoding_regions": all_anchors["noncoding_regions"]}
+        upstream["noncoding_regions_upstream"] = all_upstream[
+            "noncoding_regions_upstream"
+        ]
+        noannot["noncoding_regions_random-noannot"] = all_noannot[
+            "noncoding_regions_random-noannot"
+        ]
+        randoms["noncoding_regions_random"] = all_randoms[
+            "noncoding_regions_random"
+        ]
+    else:
+        retained, upstream = add_upstream(retained, chrom_lengths, 2000)
+        noannot, randoms = random_controls(retained, chrom_lengths, seed, 2000)
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True)
     write_beds(output, {**retained, **upstream, **noannot, **randoms})
@@ -434,10 +454,22 @@ def read_role_maps(root: Path, category: str, chromosomes: set[str]) -> dict[str
     return maps
 
 
-def parquet_row(genome, category: str, label: str, scope: str, row: dict,
-                pool: tuple[int, int] | None = None) -> dict | None:
+def parquet_row(
+    genome,
+    category: str,
+    label: str,
+    scope: str,
+    row: dict,
+    context_policy: str,
+    pool: tuple[int, int] | None = None,
+) -> dict | None:
     context = context_for_region(
-        genome, row["chrom"], row["start"], row["end"], row["strand"]
+        genome,
+        row["chrom"],
+        row["start"],
+        row["end"],
+        row["strand"],
+        policy=context_policy,
     )
     if context is None:
         return None
@@ -449,6 +481,7 @@ def parquet_row(genome, category: str, label: str, scope: str, row: dict,
         "pair_id": row["pair_id"],
         "category": category,
         "scope": scope,
+        "context_policy": context_policy,
         "chrom": row["chrom"],
         "start": row["start"],
         "end": row["end"],
@@ -465,31 +498,34 @@ def parquet_row(genome, category: str, label: str, scope: str, row: dict,
 
 def build_parquets(regions: Path, genome_path: Path, output: Path,
                    categories: list[str], seed: int,
-                   noncoding_added: bool, bigwig_path: Path | None) -> None:
+                   bigwig_path: Path | None) -> None:
     genome = Fasta(str(genome_path))
     chromosomes = set(ALL_CHROMS)
-    suffix = "-noncoding-added" if noncoding_added else ""
-
-    def binary_rows(control: str):
+    def binary_rows(control: str, context_policy: str):
         for category in categories:
             maps = read_role_maps(regions, category, chromosomes)
             common = set.intersection(*(set(values) for values in maps.values()))
             for pair_id in sorted(common):
                 for role, label in (("feature", "feature"), (control, control)):
                     result = parquet_row(
-                        genome, category, label, "full", maps[role][pair_id]
+                        genome,
+                        category,
+                        label,
+                        "full",
+                        maps[role][pair_id],
+                        context_policy,
                     )
                     if result:
                         yield result
 
-    def multiclass_rows(scope: str):
+    def multiclass_rows(scope: str, context_policy: str):
         for category in categories:
             maps = read_role_maps(regions, category, chromosomes)
             common = set.intersection(*(set(values) for values in maps.values()))
             for pair_id in sorted(common):
                 row = maps["feature"][pair_id]
                 result = parquet_row(
-                    genome, category, category, scope, row
+                    genome, category, category, scope, row, context_policy
                 )
                 if result and scope == "full":
                     yield result
@@ -501,21 +537,32 @@ def build_parquets(regions: Path, genome_path: Path, output: Path,
                         yield {**result, "pool_start": span[0], "pool_end": span[1]}
 
     output.mkdir(parents=True, exist_ok=True)
-    for control in ("upstream", "random", "random-noannot"):
-        name = f"functional-{control}-gamba{suffix}.parquet"
-        count = write_parquet(
-            output / name,
-            binary_rows(control),
-        )
-        if bigwig_path is not None:
-            annotate(output / name, output / name, bigwig_path, 2048)
-        print(f"{name}: {count:,} rows")
-    for scope, label in (("full", "full"), ("100bp", "100bp")):
-        name = f"functional-multiclass-gamba-{label}{suffix}.parquet"
-        count = write_parquet(output / name, multiclass_rows(scope))
-        if bigwig_path is not None:
-            annotate(output / name, output / name, bigwig_path, 2048)
-        print(f"{name}: {count:,} rows")
+    for context_policy, filename_policy in (
+        ("causal", "causal"),
+        ("symmetric", "bidi"),
+    ):
+        for control in ("upstream", "random", "random-noannot"):
+            name = (
+                f"functional-{control}-gamba-{filename_policy}.parquet"
+            )
+            count = write_parquet(
+                output / name,
+                binary_rows(control, context_policy),
+            )
+            if bigwig_path is not None:
+                annotate(output / name, output / name, bigwig_path, 2048)
+            print(f"{name}: {count:,} rows")
+        for scope, label in (("full", "full"), ("100bp", "100bp")):
+            name = (
+                f"functional-multiclass-gamba-{label}-"
+                f"{filename_policy}.parquet"
+            )
+            count = write_parquet(
+                output / name, multiclass_rows(scope, context_policy)
+            )
+            if bigwig_path is not None:
+                annotate(output / name, output / name, bigwig_path, 2048)
+            print(f"{name}: {count:,} rows")
     genome.close()
 
 
@@ -551,7 +598,7 @@ def main() -> None:
     if not args.skip_parquets:
         build_parquets(
             args.regions_dir, args.data_root / "hg38.ml.fa", args.output_dir,
-            categories, args.seed, args.include_noncoding,
+            categories, args.seed,
             None if args.skip_phylop else args.bigwig,
         )
 

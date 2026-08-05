@@ -5,6 +5,13 @@ This repository is the small, data-only part of
 functional-region and ATG evaluation inputs and writes fixed, model-independent
 parquets. It contains no model, embedding, plotting, or metric code.
 
+Each logical dataset is emitted twice:
+
+- `*-causal.parquet`: ROI end-anchored after strand orientation for
+  autoregressive models such as Evo2;
+- `*-bidi.parquet`: ROI centered for bidirectional models such as the
+  distilled student, GPN-Star, and PhyloGPN.
+
 The implementation is derived from GAMBA commit
 [`e83984e`](https://github.com/microsoft/gamba/commit/e83984ea20bb4ee017993144fbe17e7bae3cdddc),
 principally:
@@ -22,21 +29,16 @@ GAMBA is MIT licensed; the license and attribution are retained in
 
 ```text
 Functional-Regions/
-├── functional-upstream-gamba.parquet
-├── functional-upstream-gamba-noncoding-added.parquet
-├── functional-random-gamba.parquet
-├── functional-random-gamba-noncoding-added.parquet
-├── functional-random-noannot-gamba.parquet
-├── functional-random-noannot-gamba-noncoding-added.parquet
-├── functional-multiclass-gamba-full.parquet
-├── functional-multiclass-gamba-100bp.parquet
-├── functional-multiclass-gamba-full-noncoding-added.parquet
-├── functional-multiclass-gamba-100bp-noncoding-added.parquet
+├── functional-upstream-gamba-{causal,bidi}.parquet
+├── functional-random-gamba-{causal,bidi}.parquet
+├── functional-random-noannot-gamba-{causal,bidi}.parquet
+├── functional-multiclass-gamba-full-{causal,bidi}.parquet
+├── functional-multiclass-gamba-100bp-{causal,bidi}.parquet
 ├── regions/
 └── regions-noncoding-added/
 
 ATG/
-├── atg-gamba.parquet
+├── atg-gamba-{causal,bidi}.parquet
 └── source/
     ├── chr1_atg_5way_labels.tsv
     ├── ...
@@ -62,22 +64,24 @@ assignment. This avoids storing duplicate physical train and test files.
 | `functional-random-gamba*.parquet` | `feature`, `random` |
 | `functional-random-noannot-gamba*.parquet` | `feature`, `random-noannot` |
 | `functional-multiclass-gamba-{full,100bp}*.parquet` | one label per functional category |
-| `ATG/atg-gamba.parquet` | `start`, `noncoding_near`, `noncoding_far`, `inframe_methionine`, `outframe_atg` |
+| `ATG/atg-gamba-{causal,bidi}.parquet` | `start`, `noncoding_near`, `noncoding_far`, `inframe_methionine`, `outframe_atg` |
 
 The multiclass full-region and 100 bp variants are separate parquet files and
-separate Hugging Face configs. Files ending in `-noncoding-added.parquet`
-include the explicit `noncoding_regions` extension; unsuffixed files are the
-canonical ten-category GAMBA data.
+separate Hugging Face configs. Every functional parquet is a strict superset:
+it includes the explicit `noncoding_regions` extension, while
+`category != "noncoding_regions"` is exactly the canonical ten-category GAMBA
+paper dataset. This avoids storing the canonical rows twice.
 
 ## Parquet schemas
 
-All ten functional parquets use exactly the same columns and Arrow types:
+All functional parquets use exactly the same columns and Arrow types:
 
 | Column | Type | Meaning |
 |---|---|---|
 | `split`, `sequence`, `label` | string | probe/fine-tuning `train` or held-out `test`; model input and target |
 | `pair_id` | string | matched functional pair or stable feature identifier |
 | `category`, `scope` | string | functional class and pooling scope |
+| `context_policy` | string | `causal` or `symmetric` window placement |
 | `chrom`, `start`, `end`, `strand` | string/int64 | 0-based, half-open feature coordinates |
 | `context_start`, `context_end` | int64 | forward-genome coordinates of `sequence` |
 | `roi_start`, `roi_end` | int32 | feature offsets in the strand-oriented sequence |
@@ -90,10 +94,22 @@ The ATG parquet uses the same core columns and adds `transcript_id`, `gene_id`,
 `label_id`, and `delta_bp`. Functional parquets do not contain empty ATG-only
 columns.
 
-Sequences use GAMBA's asymmetric 2,048 bp window: the ROI is at the right edge
-on `+` records and at the left edge on every other strand value. Only `-`
-records are reverse complemented. Features longer than 2,048 bp use GAMBA's
-1,000 bp truncation.
+ATG stores five source contexts per transcript. For the paper leaderboard,
+merge `noncoding_near` and `noncoding_far` into one `noncoding` class and use
+cosine leave-one-out 1-nearest-neighbor balanced accuracy. The author
+extraction script's five-way Euclidean output is a separate diagnostic.
+
+The GAMBA paper uses model-appropriate context geometry. `-causal` sequences
+place the ROI at the end of the strand-oriented 2,048 bp window so an
+autoregressive model can condition on the preceding bases; use these for Evo2
+and other left-to-right models. `-bidi` sequences center the ROI so both
+flanks are visible; use these for GAMBA encoders, the distilled student,
+GPN-Star, PhyloGPN, and other masked or bidirectional models. The
+`context_policy` column is `causal` or `symmetric`, respectively.
+
+Only `-` records are reverse complemented. Causal features longer than 2,048
+bp retain GAMBA's 1,000 bp truncation; bidi files retain the centered 2,048 bp
+span.
 
 ## Environment
 
@@ -204,7 +220,6 @@ bash scripts/run_all.sh
 Or independently:
 
 ```bash
-python Functional-Regions/process.py
 python Functional-Regions/process.py \
   --include-noncoding \
   --regions-dir Functional-Regions/regions-noncoding-added
@@ -217,8 +232,8 @@ processor, or to `scripts/run_all.sh`, for sequence-only outputs.
 Functional regions are capped at 10,000 retained anchors per category with
 seed 42. ATG generation follows GAMBA's MANE Select CDS logic, then samples
 2,000 complete examples approximately evenly across `chr1`–`chr22`, also with
-seed 42. Omit `--include-noncoding` to build the exact ten-category GAMBA
-region set instead of the final extended parquet set.
+seed 42. Omit `--include-noncoding` only when regenerating the ten-category
+reference BED set; published parquets use the noncoding-inclusive superset.
 
 ### Functional chromosome split
 
@@ -253,13 +268,14 @@ The completed reference comparison found:
 - all 920 ten-category BED files byte-identical to unmodified GAMBA output;
 - all 22 ATG chromosome TSVs, the combined TSV, and the sampled 2,000 examples
   byte-identical to GAMBA output;
-- 169,674 rows in each canonical binary parquet
-  (`135,692` train, `33,982` test);
-- 188,560 rows in each binary parquet with noncoding added
-  (`150,726` train, `37,834` test);
-- 84,837 canonical full-region multiclass rows and 58,643 canonical 100 bp rows;
-- 94,280 full-region and 67,623 100 bp rows with noncoding added;
-- 10,000 rows in the ATG parquet.
+- 169,674 paper rows in each binary parquet after excluding
+  `noncoding_regions`;
+- 188,562 total rows in each binary superset (`150,728` train and `37,834`
+  test);
+- 84,837 paper full-region multiclass rows and 58,643 paper 100 bp rows after
+  the same filter;
+- 94,281 total full-region rows and 67,624 total 100 bp rows;
+- 10,000 rows in each ATG context-policy parquet.
 
 ## Intentional, visible differences from GAMBA
 
@@ -277,7 +293,7 @@ The completed reference comparison found:
    then reverse complements that interval. This pipeline intentionally keeps
    that convention even when the resulting displayed triplet is surprising.
 
-These are processing fixes, not model changes. The ten-category
-default BED output is used for direct equivalence checks against the
-unmodified GAMBA generator; `scripts/run_all.sh` builds both canonical and
-`noncoding-added` parquet variants.
+These are processing fixes, not model changes. The ten-category reference BED
+output is used for direct equivalence checks against the unmodified GAMBA
+generator; `scripts/run_all.sh` appends the noncoding category without
+changing any canonical row.

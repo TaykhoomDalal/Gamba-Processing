@@ -16,6 +16,7 @@ SCHEMA = pa.schema([
     ("pair_id", pa.string()),
     ("category", pa.string()),
     ("scope", pa.string()),
+    ("context_policy", pa.string()),
     ("chrom", pa.string()),
     ("start", pa.int64()),
     ("end", pa.int64()),
@@ -49,27 +50,56 @@ def with_phylop(schema: pa.Schema) -> pa.Schema:
     return pa.schema([*schema, *PHYLOP_FIELDS])
 
 
-def context_for_region(genome, chrom: str, start: int, end: int, strand: str,
-                       length: int = 2048) -> dict | None:
+def context_bounds(
+    chrom_length: int,
+    start: int,
+    end: int,
+    strand: str,
+    length: int,
+    policy: str,
+) -> tuple[int, int]:
     start, end = sorted((int(start), int(end)))
     feature_length = end - start
-    if feature_length <= 0 or chrom not in genome:
+    if policy == "causal":
+        if feature_length > length:
+            kept = min(1000, length)
+            if strand == "+":
+                context_end = end
+                context_start = max(0, context_end - kept)
+            else:
+                context_start, context_end = start, min(chrom_length, start + kept)
+        elif strand != "+":
+            context_start = start
+            context_end = min(chrom_length, start + length)
+        else:
+            context_end = end
+            context_start = max(0, end - length)
+    elif policy == "symmetric":
+        center = (start + end) // 2
+        context_start = max(0, center - length // 2)
+        context_end = min(chrom_length, context_start + length)
+        context_start = max(0, context_end - length)
+    else:
+        raise ValueError(f"unknown context policy: {policy}")
+    return context_start, context_end
+
+
+def context_for_region(
+    genome,
+    chrom: str,
+    start: int,
+    end: int,
+    strand: str,
+    length: int = 2048,
+    policy: str = "causal",
+) -> dict | None:
+    start, end = sorted((int(start), int(end)))
+    if end <= start or chrom not in genome:
         return None
 
-    chrom_length = len(genome[chrom])
-    if feature_length > length:
-        kept = min(1000, length)
-        if strand == "+":
-            context_end = end
-            context_start = max(0, context_end - kept)
-        else:
-            context_start, context_end = start, min(chrom_length, start + kept)
-    elif strand != "+":
-        context_start = start
-        context_end = min(chrom_length, start + length)
-    else:
-        context_end = end
-        context_start = max(0, end - length)
+    context_start, context_end = context_bounds(
+        len(genome[chrom]), start, end, strand, length, policy
+    )
 
     sequence = genome[chrom][context_start:context_end].seq.upper()
     roi_start = max(0, start - context_start)
@@ -86,6 +116,7 @@ def context_for_region(genome, chrom: str, start: int, end: int, strand: str,
         "context_end": context_end,
         "roi_start": roi_start,
         "roi_end": roi_end,
+        "context_policy": policy,
     }
 
 

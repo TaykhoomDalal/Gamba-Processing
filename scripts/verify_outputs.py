@@ -8,7 +8,13 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import ATG_SCHEMA, PHYLOP_FIELDS, SCHEMA, with_phylop
+from common import (
+    ATG_SCHEMA,
+    PHYLOP_FIELDS,
+    SCHEMA,
+    context_bounds,
+    with_phylop,
+)
 
 
 def compare_trees(expected: Path, actual: Path) -> None:
@@ -24,11 +30,15 @@ def compare_trees(expected: Path, actual: Path) -> None:
 
 def verify_parquet(path: Path, require_phylop: bool) -> int:
     table = pq.read_table(path)
-    expected = ATG_SCHEMA if path.name == "atg-gamba.parquet" else SCHEMA
+    expected = ATG_SCHEMA if path.name.startswith("atg-gamba-") else SCHEMA
     if require_phylop:
         expected = with_phylop(expected)
     assert table.schema == expected
     frame = table.to_pandas()
+    filename_policy = path.stem.rsplit("-", 1)[-1]
+    assert filename_policy in {"causal", "bidi"}
+    context_policy = "symmetric" if filename_policy == "bidi" else "causal"
+    assert set(frame.context_policy) == {context_policy}
     assert frame.sequence.str.len().between(1, 2048).all()
     assert (frame.roi_start >= 0).all()
     assert (frame.roi_end > frame.roi_start).all()
@@ -43,30 +53,33 @@ def verify_parquet(path: Path, require_phylop: bool) -> int:
     if require_phylop:
         assert not frame[[field.name for field in PHYLOP_FIELDS]].isna().any().any()
 
-    noncoding_added = "-noncoding-added" in path.stem
     if path.name.startswith("functional-") and "multiclass" not in path.name:
         assert set(frame.split) == {"train", "test"}
         assert set(frame.loc[frame.split == "test", "chrom"]) == {
             "chr2", "chr3", "chr16", "chr22"
         }
-        assert ("noncoding_regions" in set(frame.category)) == noncoding_added
+        assert "noncoding_regions" in set(frame.category)
         grouped = frame.groupby(["category", "pair_id"])
         groups = grouped.label.agg(set)
         control = path.stem.removeprefix("functional-").split("-gamba", 1)[0]
         expected = {"feature", control}
         assert groups.map(lambda labels: labels == expected).all()
         assert grouped.size().eq(2).all()
+        assert len(frame[frame.category != "noncoding_regions"]) == 169_674
     elif "multiclass" in path.name:
         assert set(frame.split) == {"train", "test"}
         assert set(frame.loc[frame.split == "test", "chrom"]) == {
             "chr2", "chr3", "chr16", "chr22"
         }
-        assert ("noncoding_regions" in set(frame.category)) == noncoding_added
+        assert "noncoding_regions" in set(frame.category)
         expected_scope = "100bp" if "-100bp" in path.name else "full"
         assert set(frame.scope) == {expected_scope}
         assert frame.label.eq(frame.category).all()
         if expected_scope == "100bp":
             assert (frame.pool_end - frame.pool_start).eq(100).all()
+            assert len(frame[frame.category != "noncoding_regions"]) == 58_643
+        else:
+            assert len(frame[frame.category != "noncoding_regions"]) == 84_837
     else:
         grouped = frame.groupby("pair_id")
         groups = grouped.label.agg(set)
@@ -87,6 +100,7 @@ def main() -> None:
     parser.add_argument("--compare-reference", action="store_true")
     parser.add_argument("--skip-phylop", action="store_true")
     args = parser.parse_args()
+    test_context_bounds()
 
     if args.compare_reference:
         compare_trees(
@@ -105,16 +119,21 @@ def main() -> None:
 
     paths = [
         *[
-            args.root / "Functional-Regions" / f"functional-{task}-gamba{suffix}.parquet"
+            args.root / "Functional-Regions"
+            / f"functional-{task}-gamba-{policy}.parquet"
             for task in ("upstream", "random", "random-noannot")
-            for suffix in ("", "-noncoding-added")
+            for policy in ("causal", "bidi")
         ],
         *[
-            args.root / "Functional-Regions" / f"functional-multiclass-gamba-{scope}{suffix}.parquet"
+            args.root / "Functional-Regions"
+            / f"functional-multiclass-gamba-{scope}-{policy}.parquet"
             for scope in ("full", "100bp")
-            for suffix in ("", "-noncoding-added")
+            for policy in ("causal", "bidi")
         ],
-        args.root / "ATG/atg-gamba.parquet",
+        *[
+            args.root / "ATG" / f"atg-gamba-{policy}.parquet"
+            for policy in ("causal", "bidi")
+        ],
     ]
     for path in paths:
         print(
@@ -122,6 +141,20 @@ def main() -> None:
             f"{verify_parquet(path, not args.skip_phylop):,} rows"
         )
     print("all outputs verified")
+
+
+def test_context_bounds() -> None:
+    assert context_bounds(10_000, 5_000, 5_100, "+", 2_048, "causal") == (
+        3_052,
+        5_100,
+    )
+    assert context_bounds(10_000, 5_000, 5_100, "-", 2_048, "causal") == (
+        5_000,
+        7_048,
+    )
+    assert context_bounds(
+        10_000, 5_000, 5_100, "+", 2_048, "symmetric"
+    ) == (4_026, 6_074)
 
 
 if __name__ == "__main__":

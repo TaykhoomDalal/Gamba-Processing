@@ -11,7 +11,6 @@ elif [[ $# -gt 0 ]]; then
 fi
 
 python "$root/scripts/download_data.py" "${args[@]}"
-python "$root/Functional-Regions/process.py" "${args[@]}"
 python "$root/Functional-Regions/process.py" \
   --include-noncoding \
   --regions-dir "$root/Functional-Regions/regions-noncoding-added" \

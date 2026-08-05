@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 import pyBigWig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import PHYLOP_NAMES, with_phylop
+from common import PHYLOP_NAMES, context_bounds, with_phylop
 
 SUMMARY_NAMES = PHYLOP_NAMES
 
@@ -68,24 +68,14 @@ def oriented_pool_span(row: dict) -> tuple[int, int]:
 
 def symmetric_context(row: dict, chrom_length: int,
                       length: int = 2048) -> tuple[int, int]:
-    start, end = sorted((row["start"], row["end"]))
-    feature_length = end - start
-    if feature_length >= length:
-        center = (start + end) // 2
-        context_start = max(0, center - length // 2)
-        context_end = min(chrom_length, context_start + length)
-        context_start = max(0, context_end - length)
-    else:
-        left = (length - feature_length) // 2
-        right = length - feature_length - left
-        context_start = max(0, start - left)
-        context_end = min(chrom_length, end + right)
-        if context_end - context_start > length:
-            context_end = context_start + length
-        elif context_end - context_start < length:
-            context_start = max(0, context_end - length)
-            context_end = min(chrom_length, context_start + length)
-    return context_start, context_end
+    return context_bounds(
+        chrom_length,
+        row["start"],
+        row["end"],
+        row.get("strand", "+"),
+        length,
+        "symmetric",
+    )
 
 
 def baseline_roi_span(row: dict, chrom_length: int) -> tuple[int, int]:

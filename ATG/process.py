@@ -259,7 +259,11 @@ def even_sample(frame: pd.DataFrame, total: int, seed: int) -> pd.DataFrame:
     return result.sample(total, random_state=seed) if len(result) > total else result
 
 
-def parquet_rows(sampled: pd.DataFrame, genome: Fasta):
+def parquet_rows(
+    sampled: pd.DataFrame,
+    genome: Fasta,
+    context_policy: str,
+):
     for row in sampled.itertuples(index=False):
         positions = {label_id: int(getattr(row, column))
                      for label_id, (column, _, _) in LABELS.items()}
@@ -267,7 +271,12 @@ def parquet_rows(sampled: pd.DataFrame, genome: Fasta):
         contexts = []
         for label_id, position in positions.items():
             context = context_for_region(
-                genome, row.chrom, position, position + 3, row.strand
+                genome,
+                row.chrom,
+                position,
+                position + 3,
+                row.strand,
+                policy=context_policy,
             )
             if context is None:
                 contexts = []
@@ -282,6 +291,7 @@ def parquet_rows(sampled: pd.DataFrame, genome: Fasta):
                 "pair_id": pair_id,
                 "category": "ATG",
                 "scope": "roi",
+                "context_policy": context_policy,
                 "chrom": row.chrom,
                 "start": position,
                 "end": position + 3,
@@ -305,7 +315,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, default=root.parent / "data")
     parser.add_argument("--source-dir", type=Path, default=root / "source")
-    parser.add_argument("--output", type=Path, default=root / "atg-gamba.parquet")
+    parser.add_argument("--output-dir", type=Path, default=root)
     parser.add_argument("--n-examples", type=int, default=2000)
     parser.add_argument("--per-chrom-limit", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
@@ -338,12 +348,24 @@ def main() -> None:
         frame = frame[frame[column].astype(str) != "."]
     sampled = even_sample(frame, args.n_examples, args.seed)
     sampled.to_csv(args.source_dir / "sampled_examples_atg5.tsv", sep="\t", index=False)
-    count = write_parquet(args.output, parquet_rows(sampled, genome), ATG_SCHEMA)
-    if not args.skip_phylop:
-        annotate(args.output, args.output, args.bigwig, 2048)
+    for context_policy, filename_policy in (
+        ("causal", "causal"),
+        ("symmetric", "bidi"),
+    ):
+        output = args.output_dir / f"atg-gamba-{filename_policy}.parquet"
+        count = write_parquet(
+            output,
+            parquet_rows(sampled, genome, context_policy),
+            ATG_SCHEMA,
+        )
+        if not args.skip_phylop:
+            annotate(output, output, args.bigwig, 2048)
+        assert count == 5 * len(sampled)
+        print(
+            f"ATG-5-way ({context_policy}): "
+            f"{len(sampled):,} examples, {count:,} rows"
+        )
     genome.close()
-    assert count == 5 * len(sampled)
-    print(f"ATG-5-way: {len(sampled):,} examples, {count:,} rows")
 
 
 if __name__ == "__main__":
